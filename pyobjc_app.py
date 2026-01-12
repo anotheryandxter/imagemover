@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Native macOS UI using PyObjC (AppKit) that wraps the Organizer core."""
 import sys
+from datetime import datetime
 import threading
 import logging
+import sys
+import traceback
+import threading as _threading
+import signal as _signal
 from pathlib import Path
 
 from AppKit import NSApplication, NSApp, NSWindow, NSButton, NSTextField, NSTextView, NSScrollView, NSMakeRect, NSOpenPanel, NSURL
@@ -10,8 +15,83 @@ from Foundation import NSObject, NSLog
 
 from organizer_core import Organizer
 
-logging.basicConfig(level=logging.INFO)
+# Configure logging to a file so we capture unhandled exceptions from the packaged app
+log_path = Path.home() / 'Library' / 'Logs' / 'FileOrganizer.log'
+log_path.parent.mkdir(parents=True, exist_ok=True)
+file_handler = logging.FileHandler(str(log_path), encoding='utf-8')
+file_handler.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s')
+file_handler.setFormatter(formatter)
+root_logger = logging.getLogger()
+if not root_logger.handlers:
+    logging.basicConfig(level=logging.INFO)
+root_logger.addHandler(file_handler)
+root_logger.setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
+logger.info('pyobjc_app module imported')
+
+
+# Global exception handlers to capture crashes and write tracebacks to the log file
+def _report_exception(exc_type, exc_value, exc_traceback):
+    try:
+        if issubclass(exc_type, KeyboardInterrupt):
+            # let default handler handle keyboard interrupts
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+    except Exception:
+        pass
+    tb = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    logger.error('Uncaught exception:\n%s', tb)
+    try:
+        # Try to show a native alert if AppKit is available
+        from AppKit import NSAlert
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_('FileOrganizer: Unexpected Error')
+        alert.setInformativeText_('An unexpected error occurred. See the log at: ' + str(log_path))
+        alert.addButtonWithTitle_('OK')
+        alert.runModal()
+    except Exception:
+        pass
+
+
+sys.excepthook = _report_exception
+
+# Python 3.8+ threading hook
+try:
+    def _thread_excepthook(args):
+        _report_exception(args.exc_type, args.exc_value, args.exc_traceback)
+
+    _threading.excepthook = _thread_excepthook
+except Exception:
+    pass
+
+# Signal handlers to log termination signals
+def _signal_handler(signum, frame):
+    logger.warning('Received signal: %s', signum)
+    try:
+        tb = ''.join(traceback.format_stack(frame))
+        logger.debug('Stack at signal:\n%s', tb)
+    except Exception:
+        pass
+
+for _sig in ('SIGTERM', 'SIGINT', 'SIGHUP'):
+    try:
+        _signal.signal(getattr(_signal, _sig), _signal_handler)
+    except Exception:
+        pass
+
+# Write an immediate startup marker to both the user log and /tmp to aid debugging
+try:
+    with open(str(log_path), 'a', encoding='utf-8') as _f:
+        _f.write(f"STARTUP_MARKER: {datetime.now().isoformat()}\n")
+except Exception:
+    pass
+
+try:
+    with open('/tmp/FileOrganizer.log', 'a', encoding='utf-8') as _f:
+        _f.write(f"STARTUP_MARKER: {datetime.now().isoformat()}\n")
+except Exception:
+    pass
 
 
 class WorkerThread(threading.Thread):
@@ -84,18 +164,24 @@ class AppDelegate(NSObject):
         self.organizer = None
         self.worker = None
         self.window = None
+        self.log_view = None
 
     def append_log(self, msg: str):
+        logger.debug(f'append_log called: {msg}')
         # Schedule UI update on the main thread by calling `updateLog_:` there.
+        if not self.log_view:
+            logger.warning('log_view not yet initialized')
+            return
         try:
             self.performSelectorOnMainThread_withObject_waitUntilDone_('updateLog:', msg, False)
-        except Exception:
+        except Exception as e:
+            logger.error(f'performSelector failed: {e}')
             # Fallback: try direct insert (may fail if called off-main-thread)
             try:
                 cur = self.log_view.string() or ''
                 self.log_view.setString_(cur + msg + '\n')
-            except Exception:
-                pass
+            except Exception as e2:
+                logger.error(f'direct setString failed: {e2}')
 
     def updateLog_(self, pymsg):
         try:
@@ -190,6 +276,7 @@ class AppDelegate(NSObject):
             self.append_log(f'Photos export failed: {e}')
 
     def applicationDidFinishLaunching_(self, notification):
+        logger.info('applicationDidFinishLaunching_ called')
         # Create organizer and build UI here (on main thread after app finishes launching)
         self.organizer = Organizer({
             'SOURCE_FOLDERS': [],
@@ -204,12 +291,20 @@ class AppDelegate(NSObject):
         self.worker = None
 
         # Build UI
+        logger.info('Building UI')
+        try:
+            from AppKit import NSTitledWindowMask, NSClosableWindowMask, NSMiniaturizableWindowMask, NSResizableWindowMask
+            style_mask = NSTitledWindowMask | NSClosableWindowMask | NSMiniaturizableWindowMask | NSResizableWindowMask
+        except:
+            style_mask = 15  # fallback
+            
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(100.0, 100.0, 900.0, 600.0),
-            15,  # titled,closable,minimizable,resizable mask combined
+            style_mask,
             2, False
         )
         self.window.setTitle_('File Organizer (PyObjC)')
+        logger.info(f'Window created: {self.window}')
 
         content = self.window.contentView()
 
@@ -255,35 +350,47 @@ class AppDelegate(NSObject):
         stop_btn.setAction_('stop:')
         content.addSubview_(stop_btn)
 
-            export_btn = NSButton.alloc().initWithFrame_(NSMakeRect(320, 440, 160, 32))
-            export_btn.setTitle_('Export')
-            export_btn.setTarget_(self)
-            export_btn.setAction_('exportPhotos:')
+        export_btn = NSButton.alloc().initWithFrame_(NSMakeRect(320, 440, 160, 32))
+        export_btn.setTitle_('Export Photos')
+        export_btn.setTarget_(self)
+        export_btn.setAction_('exportPhotos:')
         content.addSubview_(export_btn)
 
+        # Log view (scrollable text area)
+        scroll_view = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, 20, 860, 400))
+        scroll_view.setHasVerticalScroller_(True)
+        scroll_view.setAutoresizingMask_(18)
+        
+        self.log_view = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 860, 400))
+        self.log_view.setEditable_(False)
+        scroll_view.setDocumentView_(self.log_view)
+        content.addSubview_(scroll_view)
+
+        # Show window
+        logger.info('About to show window')
+        self.window.center()
+        self.window.setLevel_(3)  # NSFloatingWindowLevel
+        self.window.orderFrontRegardless()
+        self.window.makeKeyAndOrderFront_(None)
+        logger.info('Window shown')
+        self.append_log('File Organizer started. Configure sources and destination, then click Start.')
+        
+        logger.info('applicationDidFinishLaunching_ completed')
+
+
+if __name__ == '__main__':
+    try:
+        app = NSApplication.sharedApplication()
+        logger.info('Created NSApplication')
+        delegate = AppDelegate.alloc().init()
+        app.setDelegate_(delegate)
         try:
-            # Manual export: scan sources, create batch, move files
-            if not self.organizer.startup_checks():
-                self.append_log('Startup checks failed')
-                return
-
-            files = self.organizer.scan_all_sources()
-            total = self.organizer.count_total_files(files)
-            if total == 0:
-                self.append_log('No files to export')
-                return
-
-            batch = self.organizer.create_batch_folder()
-            self.append_log(f'Exporting {total} files to {batch}')
-            moved, attempted = self.organizer.move_all_files(files, batch)
-            self.append_log(f'Moved {moved}/{attempted} files to {batch}')
-
-            if self.organizer.config.get('AUTO_CLEANUP_EMPTY_DIRS', False):
-                self.append_log('Cleaning up empty source directories...')
-                try:
-                    self.organizer.cleanup_all_sources()
-                except Exception as e:
-                    self.append_log(f'Cleanup error: {e}')
-
-        except Exception as e:
-            self.append_log(f'Export failed: {e}')
+            app.setActivationPolicy_(0)  # NSApplicationActivationPolicyRegular
+        except Exception:
+            logger.debug('Could not set activation policy')
+        app.activateIgnoringOtherApps_(True)
+        logger.info('Starting AppKit run loop')
+        app.run()
+        logger.info('AppKit run loop exited')
+    except Exception:
+        logger.exception('Failed to start AppKit run loop')

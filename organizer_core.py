@@ -279,12 +279,24 @@ class PhotosExporter:
                     raise PhotosPermissionError(guidance)
                 raise
 
+            # Normalize photos_by_uuid: newer osxphotos may expose it as a callable
+            photos_map = None
+            try:
+                raw = getattr(db, 'photos_by_uuid', None)
+                if callable(raw):
+                    photos_map = raw()
+                else:
+                    photos_map = raw
+            except Exception as e:
+                self.logger.warning(f"Could not obtain photos_by_uuid mapping: {e}")
+                photos_map = {}
+
             # Resolve PhotoInfo objects for requested UUIDs
             photos_to_export = []
             if uuids:
                 for u in uuids:
                     try:
-                        photo = db.photos_by_uuid.get(u)
+                        photo = photos_map.get(u) if photos_map is not None else None
                         if photo is None:
                             self.logger.warning(f"UUID not found in Photos library: {u}")
                         else:
@@ -293,7 +305,7 @@ class PhotosExporter:
                         self.logger.warning(f"Error resolving uuid {u}: {e}")
             else:
                 # Export everything (be conservative: use photos_by_uuid values)
-                photos_to_export = list(db.photos_by_uuid.values())
+                photos_to_export = list(photos_map.values()) if photos_map is not None else []
 
             # Lazy import of exporter classes (avoid failing module import earlier)
             from osxphotos.photoexporter import PhotoExporter, ExportOptions

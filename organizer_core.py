@@ -170,6 +170,35 @@ class Organizer:
             if source_path.exists():
                 self.cleanup_empty_directories(source_path)
 
+    def export_session(self) -> Tuple[int, int, Path]:
+        """Export session: move all files from source subfolders to destination, then delete empty subfolders.
+        
+        Returns: (moved_count, total_count, batch_folder)
+        """
+        # Scan all sources recursively
+        files_dict = self.scan_all_sources()
+        total = self.count_total_files(files_dict)
+        
+        if total == 0:
+            self.logger.info('No files to export')
+            return 0, 0, None
+        
+        # Create batch folder
+        batch_folder = self.create_batch_folder()
+        self.logger.info(f'Export session: moving {total} files to {batch_folder.name}')
+        
+        # Move all files
+        moved, attempted = self.move_all_files(files_dict, batch_folder)
+        
+        # Cleanup empty directories
+        self.logger.info('Cleaning up empty directories...')
+        for source_folder in self.config.get('SOURCE_FOLDERS', []):
+            source_path = Path(source_folder)
+            if source_path.exists():
+                self.cleanup_empty_directories(source_path)
+        
+        return moved, attempted, batch_folder
+
     def count_total_files(self, files_dict: Dict[str, List[Path]]) -> int:
         return sum(len(files) for files in files_dict.values())
 

@@ -275,6 +275,25 @@ class AppDelegate(NSObject):
         except Exception as e:
             self.append_log(f'Photos export failed: {e}')
 
+    def exportSession_(self, sender):
+        """Export Session: move all files from source subfolders to destination, then cleanup empty dirs"""
+        try:
+            if not self.organizer.config.get('SOURCE_FOLDERS'):
+                self.append_log('No source folders configured')
+                return
+            
+            self.append_log('Export Session: scanning all source folders...')
+            moved, attempted, batch_folder = self.organizer.export_session()
+            
+            if batch_folder:
+                self.append_log(f'Export Session complete: {moved}/{attempted} files moved to {batch_folder.name}')
+                self.append_log('Empty subfolders cleaned up')
+            else:
+                self.append_log('No files found to export')
+        except Exception as e:
+            self.append_log(f'Export Session failed: {e}')
+            logger.exception('Export session error')
+
     def applicationDidFinishLaunching_(self, notification):
         logger.info('applicationDidFinishLaunching_ called')
         # Create organizer and build UI here (on main thread after app finishes launching)
@@ -356,6 +375,12 @@ class AppDelegate(NSObject):
         export_btn.setTarget_(self)
         export_btn.setAction_('exportPhotos:')
         content.addSubview_(export_btn)
+
+        export_session_btn = NSButton.alloc().initWithFrame_(NSMakeRect(490, 440, 160, 32))
+        export_session_btn.setTitle_('Export Session')
+        export_session_btn.setTarget_(self)
+        export_session_btn.setAction_('exportSession:')
+        content.addSubview_(export_session_btn)
 
         # Log view (scrollable text area)
         scroll_view = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, 20, 860, 400))

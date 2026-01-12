@@ -247,6 +247,7 @@ def main():
         'DETECTION_DELAY_SECONDS': 10,
         'COOLDOWN_SECONDS': 30,
         'ALLOWED_EXTENSIONS': ['.jpg', '.jpeg', '.png', '.raw', '.dng', '.tiff', '.gif', '.bmp', '.mp4', '.mov', '.avi', '.psd', '.ai'],
+        'RECURSIVE_SCAN': True,
         'SKIP_HIDDEN_FILES': True,
         'STATE_FILE': '.file_organizer_state.json'
     }

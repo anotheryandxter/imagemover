@@ -286,6 +286,7 @@ class AppDelegate(NSObject):
             'COOLDOWN_SECONDS': 30,
             'ALLOWED_EXTENSIONS': ['.jpg', '.jpeg', '.png', '.raw', '.dng', '.tiff', '.gif', '.bmp', '.mp4', '.mov', '.avi', '.psd', '.ai'],
             'SKIP_HIDDEN_FILES': True,
+            'RECURSIVE_SCAN': True,
             'STATE_FILE': '.file_organizer_state.json'
         })
         self.worker = None
